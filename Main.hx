@@ -33,6 +33,22 @@ class Utils {
 		}
 	}
 
+	public static function readS(N: Int, bytes: Iterator<Int>): Int {
+		return Utils.readSStart(N, bytes.next(), bytes);
+	}
+
+	public static function readSStart(N: Int, start: Int, bytes: Iterator<Int>): Int {
+		var n = start;
+		if (n < 64 && n < Math.pow(2, N - 1)) {
+			return n;
+		} else if (64 <= n && n < 128 && n > 128 - Math.pow(2, N - 1)) {
+			return n - 128;
+		} else {
+			var m = Utils.readS(N-7, bytes);
+			return 128 * m + (n - 128);
+		}
+	}
+
 	@:generic public static function readVec<T>(bytes: Iterator<Int>, parser: Iterator<Int>->T): Array<T> {
 		var size = Utils.readU(32, bytes);
 		return [for (_ in 0...size) parser(bytes)];
@@ -254,6 +270,153 @@ class Export {
 	}
 }
 
+class Locals {
+	var n: Int;
+	var type: ValType;
+
+	public function new(bytes: Iterator<Int>) {
+		n = Utils.readU(32, bytes);
+		type = Utils.parseValType(bytes);
+	}
+
+	public function toString(): String {
+		return '($type)^$n';
+	}
+}
+
+
+enum BlockType {
+	Epsilon;
+	ValType(t: ValType);
+	TypeIdx(x: Int);
+}
+
+enum BlockInstrKind {
+	Block(instrs: Array<Instr>);
+	Loop(instrs: Array<Instr>);
+	If(then: Array<Instr>, els: Array<Instr>);
+}
+
+class BlockInstr {
+	var type: BlockType;
+	var instr: BlockInstrKind;
+
+	static function readBlockType(bytes: Iterator<Int>): BlockType {
+		switch bytes.next() {
+			case 0x40: return Epsilon;
+			case 0x7F: return ValType(I32);
+			case 0x7e: return ValType(I64);
+			case 0x7d: return ValType(F32);
+			case 0x7c: return ValType(F64);
+			case x: return TypeIdx(Utils.readSStart(33, x, bytes));
+		}
+	}
+
+	static function readInstrKind(opcode: Int, bytes: Iterator<Int>): BlockInstrKind {
+		throw "Block instr not implemented";
+	}
+
+	public function new(opcode: Int, bytes: Iterator<Int>) {
+		type = BlockInstr.readBlockType(bytes);
+		instr = BlockInstr.readInstrKind(opcode, bytes);
+	}
+}
+
+class MemArg {
+	var a: Int;
+	var o: Int;
+}
+
+enum Instr {
+	Unreachable;
+	Nop;
+	Block(instr: BlockInstr);
+	Br(label: Int);
+	BrIf(label: Int);
+	BrTable(labels: Array<Int>, l: Int);
+	Return;
+	Call(id: Int);
+	CallIndirect(id: Int);
+	Drop;
+	Select;
+}
+
+class InstrReader {
+	public static function readInstr(in_if: Bool, bytes: Iterator<Int>): Instr {
+		var opcode = bytes.next();
+		switch opcode {
+			case 0x05 if (!in_if): throw "Got if_end while not in an if";
+			case 0x05 if (in_if): throw "If else not impletemted";
+			case 0x0B: return null;
+			case 0x00: return Unreachable;
+			case 0x01: return Nop;
+			case 0x02 | 0x03 | 0x04: return Block(new BlockInstr(opcode, bytes)); 
+			case 0x0C: 
+				var label = Utils.readU(32, bytes);
+				return Br(label);
+			case 0x0d:
+				var label = Utils.readU(32, bytes);
+				return BrIf(label);
+			case 0x0e:
+				var labels = Utils.readVec(bytes, (b) -> Utils.readU(32, b));
+				var l = Utils.readU(32, bytes);
+				return BrTable(labels, l);
+			case 0x0F:
+				return Return;
+			case 0x10:
+				var funcId = Utils.readU(32, bytes);
+				return Call(funcId);
+			case 0x11:
+				var funcId = Utils.readU(32, bytes);
+				if(bytes.next() != 0) {
+					throw "Malformed Call Indirect";
+				}
+				return CallIndirect(funcId);
+			case 0x1A:
+				return Drop;
+			case 0x1B:
+				return Select;
+			case x: throw 'Instruction is invalid or unimp: $x';
+		}
+	}
+}
+
+class Expr {
+	var instrs: Array<Instr>;
+
+	public function new(bytes: Iterator<Int>) {
+		instrs = [];
+		while(true) {
+			var instr = InstrReader.readInstr(false, bytes);
+			if (instr != null) {
+				instrs.push(instr);
+			} else {
+				break;
+			}
+		}
+	}
+}
+
+class Func {
+	var locals: Array<Locals>;
+	var expr: Expr;
+
+	public function new(bytes: Iterator<Int>) {
+		locals = Utils.readVec(bytes, (b) -> new Locals(b));
+		expr = new Expr(bytes);
+	}
+}
+
+class Code {
+	var size: Int;
+	var body: Func;
+
+	public function new(bytes: Iterator<Int>) {
+		size = Utils.readU(32, bytes);
+		body = new Func(bytes);
+	}
+}
+
 class Wasm {
 	static var MAGIC: Array<Int> = [0x00, 0x61, 0x73, 0x6d];
 	static var VERSION: Array<Int> = [0x01, 0x00, 0x00, 0x00];
@@ -263,6 +426,7 @@ class Wasm {
 	var tables: VecSection<Table>;
 	var memory: VecSection<MemType>;
 	var export: VecSection<Export>;
+	var code: VecSection<Code>;
 
 	public function new(input: Iterable<Int>) {
 		var input = input.iterator();
@@ -313,9 +477,7 @@ class Wasm {
 					Sys.println("Element");
 					section.dummyRead(input);
 				case 10:
-					var section = new Section(input);
-					Sys.println("Code");
-					section.dummyRead(input);
+					code = new VecSection(input, (b) -> new Code(b));
 				case 11:
 					var section = new Section(input);
 					Sys.println("Data");
