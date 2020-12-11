@@ -322,9 +322,129 @@ class BlockInstr {
 	}
 }
 
+enum VarInstrKind {
+	Get;
+	Set;
+	Tee;
+}
+
+class VarInstr {
+	var global: Bool;
+	var kind: VarInstrKind;
+	var index: Int;
+
+	public function new(opcode: Int, bytes: Iterator<Int>) {
+		index = Utils.readU(32, bytes);
+		switch opcode {
+			case 0x20:
+				global = false;
+				kind = Get;
+			case 0x21:
+				global = false;
+				kind = Set;
+			case 0x22:
+				global = false;
+				kind = Tee;
+			case 0x23:
+				global = true;
+				kind = Get;
+			case 0x24:
+				global = true;
+				kind = Set;
+		}
+	}
+}
+
 class MemArg {
 	var a: Int;
 	var o: Int;
+
+	public function new(bytes: Iterator<Int>) {
+		a = Utils.readU(32, bytes);
+		o = Utils.readU(32, bytes);
+	}
+}
+
+enum MemInstrKind {
+	Load(location: MemArg);
+	Store(location: MemArg);
+	Size;
+	Grow;
+}
+
+class MemInstr {
+	var kind: MemInstrKind;
+	var type: ValType;
+	var signed: Bool;
+	var bandwith: Int;
+
+	public function new(opcode: Int, bytes: Iterator<Int>) {
+		switch opcode {
+			case 0x28 | 0x29 | 0x2A | 0x2B | 0x2C | 0x2D | 
+				 0x2E | 0x2F | 0x30 | 0x31 | 0x32 | 0x33 |
+				 0x34 | 0x35:
+				kind = Load(new MemArg(bytes));
+				switch opcode {
+					case 0x28 | 0x2C | 0x2D | 0x2E | 0x2F:
+						type = I32;
+					case 0x29 | 0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35:
+						type = I64;
+					case 0x2A:
+						type = F32;
+					case 0x2B:
+						type = F64;
+				}
+				switch opcode {
+					case 0x2C | 0x2E | 0x30 | 0x32 | 0x34:
+						signed = true;
+					case 0x2D | 0x2F | 0x31 | 0x33 | 0x35:
+						signed = false;
+				}
+				switch opcode {
+					case 0x2C | 0x2D | 0x30 | 0x31:
+						bandwith = 8;
+					case 0x2E | 0x2F | 0x32 | 0x33:
+						bandwith = 16;
+					case 0x34 | 0x35 | 0x28:
+						bandwith = 32;
+					case 0x29:
+						bandwith = 64;
+				}
+			case 0x36 | 0x37 | 0x38 | 0x39 | 0x3A | 0x3B |
+				 0x3C | 0x3D | 0x3E:
+				kind = Store(new MemArg(bytes));
+				switch opcode {
+					case 0x36 | 0x3A | 0x3B:
+						type = I32;
+					case 0x37 | 0x3C | 0x3D | 0x3E:
+						type = I64;
+					case 0x38:
+						type = F32;
+					case 0x39:
+						type = F64;
+				}
+				switch opcode {
+					case 0x3A | 0x3C:
+						bandwith = 8;
+					case 0x3D | 0x3B:
+						bandwith = 16;
+					case 0x36 | 0x3E:
+						bandwith = 32;
+					case 0x37:
+						bandwith = 64;
+				}
+			case 0x3F:
+				if (bytes.next() != 0x00) {
+					throw "memory.size requires a zero byte";
+				}
+				kind = Size;
+			case 0x40:
+				if (bytes.next() != 0x00) {
+					throw "memory.grow requires a zero byte";
+				}
+				kind = Grow;
+		}
+	}
 }
 
 enum Instr {
@@ -339,6 +459,8 @@ enum Instr {
 	CallIndirect(id: Int);
 	Drop;
 	Select;
+	Var(instr: VarInstr);
+	Mem(instr: MemInstr);
 }
 
 class InstrReader {
@@ -376,6 +498,14 @@ class InstrReader {
 				return Drop;
 			case 0x1B:
 				return Select;
+			case 0x20 | 0x21 | 0x22 | 0x23 | 0x24:
+				return Var(new VarInstr(opcode, bytes));
+			case 0x28 | 0x29 | 0x2A | 0x2B | 0x2C | 0x2D | 
+				 0x2E | 0x2F | 0x30 | 0x31 | 0x32 | 0x33 |
+				 0x34 | 0x35 | 0x36 | 0x37 | 0x38 | 0x39 |
+				 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F |
+			     0x40:
+				 return Mem(new MemInstr(opcode, bytes));
 			case x: throw 'Instruction is invalid or unimp: $x';
 		}
 	}
