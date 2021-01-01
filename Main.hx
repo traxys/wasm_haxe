@@ -284,6 +284,20 @@ class Locals {
 	}
 }
 
+class Globals {
+	var type: GlobalType;
+	var init: Expr;
+
+	public function new(bytes: Iterator<Int>) {
+		type = new GlobalType(bytes);
+		init = new BareExpr(bytes);
+	}
+
+	public function toString(): String {
+		return '$type = $init';
+	}
+}
+
 
 enum BlockType {
 	Epsilon;
@@ -292,9 +306,9 @@ enum BlockType {
 }
 
 enum BlockInstrKind {
-	Block(instrs: Array<Instr>);
-	Loop(instrs: Array<Instr>);
-	If(then: Array<Instr>, els: Array<Instr>);
+	Block(instrs: Expr);
+	Loop(instrs: Expr);
+	If(then: Expr, els: Expr);
 }
 
 class BlockInstr {
@@ -313,7 +327,23 @@ class BlockInstr {
 	}
 
 	static function readInstrKind(opcode: Int, bytes: Iterator<Int>): BlockInstrKind {
-		throw "Block instr not implemented";
+		var first = new Expr(bytes);
+		var second = null;
+
+		if (opcode == 0x04) {
+			if (first.has_else) {
+				second = new Expr(bytes);
+			}
+		} else if (first.has_else) {
+			throw "Non if block finished by ElseEnd";
+		}
+
+		switch opcode {
+			case 0x02: return Block(first);
+			case 0x03: return Loop(first);
+			case 0x04: return If(first, second);
+			case x: throw 'Unknown block type: $x';
+		}
 	}
 
 	public function new(opcode: Int, bytes: Iterator<Int>) {
@@ -447,6 +477,61 @@ class MemInstr {
 	}
 }
 
+enum Numeric {
+	I64(val: Int);
+	I32(val: Int);
+	F32(val: Float);
+	F64(val: Float);
+	Generic(type: ValType, kind: NumericKind);
+	Integer(i32: Bool, kind: IntNumeric);
+	Floating(f32: Bool, kind: FloatNumeric);
+}
+
+enum NumericKind {
+	Eqz;
+	Eq;
+	Ne;
+	Cmp(signed: Bool, kind: CmpKind);
+	Add;
+	Sub;
+	Mul;
+	Div(signed: Bool);
+}
+
+enum CmpKind {
+	Greater;
+	Lesser;
+	GreaterEqual;
+	LesserEqual;
+}
+
+enum IntNumeric {
+	Clz;
+	Ctz;
+	PopCnt;
+	Rem(signed: Bool);
+	And;
+	Or;
+	Xor;
+	Shl;
+	Shr(signed: Bool);
+	Rotl;
+	Rotr;
+}
+
+enum FloatNumeric {
+	Abs;
+	Neg;
+	Ceil;
+	Floor;
+	Trunc;
+	Nearest;
+	Sqrt;
+	Min;
+	Max;
+	CopySign;
+}
+
 enum Instr {
 	Unreachable;
 	Nop;
@@ -461,15 +546,17 @@ enum Instr {
 	Select;
 	Var(instr: VarInstr);
 	Mem(instr: MemInstr);
+	Numeric(instr: Numeric);
+	BlockEnd;
+	ElseEnd;
 }
 
 class InstrReader {
-	public static function readInstr(in_if: Bool, bytes: Iterator<Int>): Instr {
+	public static function readInstr(bytes: Iterator<Int>): Instr {
 		var opcode = bytes.next();
 		switch opcode {
-			case 0x05 if (!in_if): throw "Got if_end while not in an if";
-			case 0x05 if (in_if): throw "If else not impletemted";
-			case 0x0B: return null;
+			case 0x05: return ElseEnd;
+			case 0x0B: return BlockEnd;
 			case 0x00: return Unreachable;
 			case 0x01: return Nop;
 			case 0x02 | 0x03 | 0x04: return Block(new BlockInstr(opcode, bytes)); 
@@ -506,24 +593,204 @@ class InstrReader {
 				 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F |
 			     0x40:
 				 return Mem(new MemInstr(opcode, bytes));
+			case 0x41:
+				return Numeric(I32(Utils.readS(32, bytes)));
+			case 0x42:
+				return Numeric(I64(Utils.readS(64, bytes)));
+			case 0x43 | 0x44:
+				throw "Float litterals are not implemented";
+			// I32 CMP
+			case 0x45:
+				return Numeric(Generic(I32, Eqz));
+			case 0x46:
+				return Numeric(Generic(I32, Eq));
+			case 0x47:
+				return Numeric(Generic(I32, Ne));
+			case 0x48:
+				return Numeric(Generic(I32, Cmp(true, Lesser)));
+			case 0x49:
+				return Numeric(Generic(I32, Cmp(false, Lesser)));
+			case 0x4a:
+				return Numeric(Generic(I32, Cmp(true, Greater)));
+			case 0x4b:
+				return Numeric(Generic(I32, Cmp(false, Greater)));
+			case 0x4c:
+				return Numeric(Generic(I32, Cmp(true, LesserEqual)));
+			case 0x4d:
+				return Numeric(Generic(I32, Cmp(false, LesserEqual)));
+			case 0x4e:
+				return Numeric(Generic(I32, Cmp(true, GreaterEqual)));
+			case 0x4f:
+				return Numeric(Generic(I32, Cmp(false, GreaterEqual)));
+			// I64 CMP
+			case 0x50:
+				return Numeric(Generic(I64, Eqz));
+			case 0x51:
+				return Numeric(Generic(I64, Eq));
+			case 0x52:
+				return Numeric(Generic(I64, Ne));
+			case 0x53:
+				return Numeric(Generic(I64, Cmp(true, Lesser)));
+			case 0x54:
+				return Numeric(Generic(I64, Cmp(false, Lesser)));
+			case 0x55:
+				return Numeric(Generic(I64, Cmp(true, Greater)));
+			case 0x56:
+				return Numeric(Generic(I64, Cmp(false, Greater)));
+			case 0x57:
+				return Numeric(Generic(I64, Cmp(true, LesserEqual)));
+			case 0x58:
+				return Numeric(Generic(I64, Cmp(false, LesserEqual)));
+			case 0x59:
+				return Numeric(Generic(I64, Cmp(true, GreaterEqual)));
+			case 0x5a:
+				return Numeric(Generic(I64, Cmp(false, GreaterEqual)));
+			// F32 CMP
+			case 0x5b:
+				return Numeric(Generic(F32, Eq));
+			case 0x5c:
+				return Numeric(Generic(F32, Ne));
+			case 0x5d:
+				return Numeric(Generic(F32, Cmp(false, Lesser)));
+			case 0x5e:
+				return Numeric(Generic(F32, Cmp(false, Greater)));
+			case 0x5f:
+				return Numeric(Generic(F32, Cmp(false, LesserEqual)));
+			case 0x60:
+				return Numeric(Generic(F32, Cmp(false, GreaterEqual)));
+			// F64 CMP
+			case 0x61:
+				return Numeric(Generic(F64, Eq));
+			case 0x62:
+				return Numeric(Generic(F64, Ne));
+			case 0x63:
+				return Numeric(Generic(F64, Cmp(false, Lesser)));
+			case 0x64:
+				return Numeric(Generic(F64, Cmp(false, Greater)));
+			case 0x65:
+				return Numeric(Generic(F64, Cmp(false, LesserEqual)));
+			case 0x66:
+				return Numeric(Generic(F64, Cmp(false, GreaterEqual)));
+
+			// I32 Ops
+			case 0x67:
+				return Numeric(Integer(true, Clz));
+			case 0x68:
+				return Numeric(Integer(true, Ctz));
+			case 0x69:
+				return Numeric(Integer(true, PopCnt));
+			case 0x6a:
+				return Numeric(Generic(I32, Add));
+			case 0x6b:
+				return Numeric(Generic(I32, Sub));
+			case 0x6c:
+				return Numeric(Generic(I32, Mul));
+			case 0x6d:
+				return Numeric(Generic(I32, Div(true)));
+			case 0x6e:
+				return Numeric(Generic(I32, Div(false)));
+			case 0x6f:
+				return Numeric(Integer(true, Rem(true)));
+			case 0x70:
+				return Numeric(Integer(true, Rem(false)));
+			case 0x71:
+				return Numeric(Integer(true, And));
+			case 0x72:
+				return Numeric(Integer(true, Or));
+			case 0x73:
+				return Numeric(Integer(true, Xor));
+			case 0x74:
+				return Numeric(Integer(true, Shl));
+			case 0x75:
+				return Numeric(Integer(true, Shr(true)));
+			case 0x76:
+				return Numeric(Integer(true, Shr(false)));
+			case 0x77:
+				return Numeric(Integer(true, Rotl));
+			case 0x78:
+				return Numeric(Integer(true, Rotr));
+
+			// I64 Ops
+			case 0x79:
+				return Numeric(Integer(false, Clz));
+			case 0x7a:
+				return Numeric(Integer(false, Ctz));
+			case 0x7b:
+				return Numeric(Integer(false, PopCnt));
+			case 0x7c:
+				return Numeric(Generic(I64, Add));
+			case 0x7d:
+				return Numeric(Generic(I64, Sub));
+			case 0x7e:
+				return Numeric(Generic(I64, Mul));
+			case 0x7f:
+				return Numeric(Generic(I64, Div(true)));
+			case 0x80:
+				return Numeric(Generic(I64, Div(false)));
+			case 0x81:
+				return Numeric(Integer(false, Rem(true)));
+			case 0x82:
+				return Numeric(Integer(false, Rem(false)));
+			case 0x83:
+				return Numeric(Integer(false, And));
+			case 0x84:
+				return Numeric(Integer(false, Or));
+			case 0x85:
+				return Numeric(Integer(false, Xor));
+			case 0x86:
+				return Numeric(Integer(false, Shl));
+			case 0x87:
+				return Numeric(Integer(false, Shr(true)));
+			case 0x88:
+				return Numeric(Integer(false, Shr(false)));
+			case 0x89:
+				return Numeric(Integer(false, Rotl));
+			case 0x8a:
+				return Numeric(Integer(false, Rotr));
 			case x: throw 'Instruction is invalid or unimp: $x';
+		}
+	}
+}
+
+class BareExpr extends Expr {
+	public function new(bytes: Iterator<Int>) {
+		super(bytes);
+		if (has_else) {
+			throw "BareExpr ended in else";
 		}
 	}
 }
 
 class Expr {
 	var instrs: Array<Instr>;
+	public var has_else(default, null): Bool;
 
 	public function new(bytes: Iterator<Int>) {
 		instrs = [];
 		while(true) {
-			var instr = InstrReader.readInstr(false, bytes);
-			if (instr != null) {
-				instrs.push(instr);
-			} else {
+			var instr = InstrReader.readInstr(bytes);
+			if (instr == BlockEnd) {
+				has_else = false;
 				break;
+			} else if (instr == ElseEnd) {
+				has_else = true;
+				break;
+			} else {
+				instrs.push(instr);
 			}
 		}
+	}
+
+	public function prettyPrint(): String {
+		var expr = "";
+		for (instr in instrs) {
+			expr += '  $instr\n';
+		}
+		return '{\n$expr}';
+	}
+
+	public function toString(): String {
+		return '{$instrs}';
 	}
 }
 
@@ -533,7 +800,11 @@ class Func {
 
 	public function new(bytes: Iterator<Int>) {
 		locals = Utils.readVec(bytes, (b) -> new Locals(b));
-		expr = new Expr(bytes);
+		expr = new BareExpr(bytes);
+	}
+
+	public function toString(): String {
+		return '($locals) => <...>';
 	}
 }
 
@@ -545,6 +816,10 @@ class Code {
 		size = Utils.readU(32, bytes);
 		body = new Func(bytes);
 	}
+
+	public function toString(): String {
+		return body.toString();
+	}
 }
 
 class Wasm {
@@ -555,6 +830,7 @@ class Wasm {
 	var functions: VecSection<Int>;
 	var tables: VecSection<Table>;
 	var memory: VecSection<MemType>;
+	var globals: VecSection<Globals>;
 	var export: VecSection<Export>;
 	var code: VecSection<Code>;
 
@@ -593,9 +869,7 @@ class Wasm {
 				case 5:
 					memory = new VecSection(input, (b) -> new MemType(b));
 				case 6:
-					var section = new Section(input);
-					Sys.println("Global");
-					section.dummyRead(input);
+					globals = new VecSection(input, (b) -> new Globals(b));
 				case 7:
 					export = new VecSection(input, (b) -> new Export(b));
 				case 8:
@@ -637,8 +911,16 @@ class Wasm {
 		for(t in memory.elements) {
 			Sys.println("   " + t.toString());
 		}
+		Sys.println("Globals:");
+		for(g in globals.elements) {
+			Sys.println("   " + g.toString());
+		}
 		Sys.println("Exports:");
 		for(t in export.elements) {
+			Sys.println("   " + t.toString());
+		}
+		Sys.println("Code:");
+		for(t in code.elements) {
 			Sys.println("   " + t.toString());
 		}
 	}
