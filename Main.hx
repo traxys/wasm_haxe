@@ -5,6 +5,8 @@ class Main {
 
     static function main() {
 		var wasm = new Wasm(Main.input);
+		Sys.println("Module Info:");
+		Sys.println("============");
 		Sys.println("");
 		wasm.info();
     }
