@@ -1215,8 +1215,8 @@ class WasmInterpreter {
 			case F64(v): stack.push(F64(v));
 			case Generic(type, operation): switch operation {
 				case Sub | Add | Cmp(_) | Div(_) | Eq | Mul | Ne:
-					var lhs = popAssertType(type);
 					var rhs = popAssertType(type);
+					var lhs = popAssertType(type);
 					switch type {
 						case F32 | F64:
 							switch operation {
