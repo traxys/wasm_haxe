@@ -91,6 +91,21 @@ class Utils {
 			case _: throw "Unkown mut kind";
 		}
 	}
+
+	public static function intBinOp<T>(lhs: WasmValue, rhs: WasmValue, f: (Int, Int) -> Int): WasmValue {
+		switch [lhs, rhs] {
+			case [I32(lhs), I32(rhs)]: return I32(f(lhs, rhs));
+			case [I64(lhs), I64(rhs)]: return I64(f(lhs, rhs));
+			case _: throw 'Invalid types in intBinOp: $lhs, $rhs';
+		}
+	}
+	public static function floatBinOp<T>(lhs: WasmValue, rhs: WasmValue, f: (Float, Float) -> Float): WasmValue {
+		switch [lhs, rhs] {
+			case [F32(lhs), F32(rhs)]: return F32(f(lhs, rhs));
+			case [F64(lhs), F64(rhs)]: return F64(f(lhs, rhs));
+			case _: throw 'Invalid types in floatBinOp: $lhs, $rhs';
+		}
+	}
 }
 
 class Section {
@@ -208,8 +223,8 @@ enum Mut {
 }
 
 class GlobalType {
-	var type: ValType;
-	var mut: Mut;
+	public var type(default, null): ValType;
+	public var mut(default, null): Mut;
 
 	public function new(bytes: Iterator<Int>) {
 		type = Utils.parseValType(bytes);
@@ -307,8 +322,8 @@ class Locals {
 }
 
 class Globals {
-	var type: GlobalType;
-	var init: Expr;
+	public var type(default, null): GlobalType;
+	public var init(default, null): Expr;
 
 	public function new(bytes: Iterator<Int>) {
 		type = new GlobalType(bytes);
@@ -803,12 +818,35 @@ class Expr {
 		}
 	}
 
-	public function prettyPrint(): String {
-		var expr = "";
-		for (instr in instrs) {
-			expr += '  $instr\n';
+	public function prettyPrintIndent(indent: Int) {
+		var indent_s = "";
+		for (i in 0...indent) {
+			indent_s += " ";
 		}
-		return '{\n$expr}';
+
+		for (instr in instrs) {
+			switch instr {
+				case Block(b): switch b.instr {
+					case Block(b):
+						Sys.println(indent_s + "Block {");
+						b.prettyPrintIndent(indent + 2);
+						Sys.println(indent_s + "}");
+					case Loop(b):
+						Sys.println(indent_s + "Block {");
+						b.prettyPrintIndent(indent + 2);
+						Sys.println(indent_s + "}");
+					case If(b,e):
+						Sys.println(indent_s + "Block {");
+						b.prettyPrintIndent(indent + 2);
+						if (e != null) {
+							Sys.println(indent_s + "} Else {");
+							e.prettyPrintIndent(indent + 2);
+						}
+						Sys.println(indent_s + "}");
+				};
+				case _: Sys.println('$indent_s$instr');
+			}
+		}
 	}
 
 	public function toString(): String {
@@ -861,7 +899,7 @@ class WasmBinary {
 	var functions: VecSection<Int>;
 	var tables: VecSection<Table>;
 	var memory: VecSection<MemType>;
-	var globals: VecSection<Globals>;
+	public var globals(default, null): VecSection<Globals>;
 	var export: VecSection<Export>;
 	public var code(default, null): VecSection<Code>;
 
@@ -882,6 +920,11 @@ class WasmBinary {
 			case Import: funcImports[func_id];
 		}
 		return type.elements[typeIdx];
+	}
+
+	public function funcBody(func_id: Int): Func {
+		var index = func_id - (maxImport + 1);
+		return code.elements[index].body;
 	}
 
 	public function new(input: Iterable<Int>) {
@@ -1021,10 +1064,33 @@ class Frame {
 	}
 }
 
+class GlobalStore {
+	public var globals: Array<WasmValue>;
+	public var mut: Array<Mut>;
+
+	public function new(binary: WasmBinary) {
+		var count = binary.globals.elements.length;
+		globals = [for (elem in binary.globals.elements) WasmInterpreter.constEval(elem.init)];
+		mut = [for (elem in binary.globals.elements) elem.type.mut];
+	}
+
+	public function read(index: Int): WasmValue {
+		return globals[index];
+	}
+
+	public function write(value: WasmValue, index: Int) {
+		switch mut[index] {
+			case Var: globals[index] = value;
+			case Const: throw "Attempted to write to const global";
+		}
+	}
+}
+
 class WasmInterpreter {
 	var binary: WasmBinary;
 	var stack: Array<WasmValue>;
 	var frames: Array<Frame>;
+	var globals: GlobalStore;
 
 	function current_frame(): Frame {
 		return frames[frames.length - 1];
@@ -1034,6 +1100,27 @@ class WasmInterpreter {
 		binary = wasm;
 		stack = [];
 		frames = [new Frame(null, null, 0, -1)];
+		globals = new GlobalStore(wasm);
+	}
+
+	public static function constEval(expr: Expr): WasmValue {
+		if (expr.instrs.length > 1) {
+			throw "Only one instr in global";
+		}
+		if (expr.instrs.length == 0) {
+			throw "No init was given";
+		}
+		switch expr.instrs[0] {
+			case Numeric(I32(v)):
+				return I32(v);
+			case Numeric(I64(v)):
+				return I64(v);
+			case Numeric(F32(v)):
+				return F32(v);
+			case Numeric(F64(v)):
+				return F64(v);
+			case _: throw "Non const instruction in global init";
+		}
 	}
 
 	public function execute_init(func_id: Int) {
@@ -1049,7 +1136,7 @@ class WasmInterpreter {
 		switch binary.resolve(func_id) {
 			case Local:
 				Sys.println('Calling $func_id in ${current_frame().funcId}');
-				var func = binary.code.elements[func_id - 1].body;
+				var func = binary.funcBody(func_id);
 				frames.push(new Frame(args.concat(func.locals_array()), func.expr, arity, func_id));
 			case Import:
 				throw "Can't execute imported functions yet";
@@ -1057,13 +1144,14 @@ class WasmInterpreter {
 	}
 
 	function execute() {
-		var frame = current_frame();
-		if (frame.code == null) {
-			throw "Code or iptr is null, can't execute";
-		}
-		while (frame.iptr < frame.code.instrs.length) {
+		while (true) {
+			var frame = current_frame();
+			if (frame.iptr > frame.code.instrs.length) {
+				throw "IPTR overstepped code";
+			}
+
 			var instr = frame.code.instrs[frame.iptr];
-			Sys.println(instr);
+			Sys.println("--> " + instr);
 			switch instr {
 				case Numeric(x): executeNumeric(frame, x);
 				case Var(x): executeVar(frame, x);
@@ -1073,7 +1161,9 @@ class WasmInterpreter {
 				case CallIndirect(id): 
 					executeCall(true, id);
 					continue;
-				case Return: executeReturn();
+				case Return: 
+					executeReturn();
+					continue;
 				case x: throw '$x is not implemented';	
 			}
 			frame.iptr += 1;
@@ -1097,7 +1187,14 @@ class WasmInterpreter {
 
 	function executeVar(frame: Frame, instr: VarInstr) {
 		if (instr.global) {
-			throw "Global not implemented";
+			switch instr.kind {
+				case Tee:
+					throw "Global Tee does not exist";
+				case Set:
+					globals.write(stack.pop(), instr.index);
+				case Get:
+					stack.push(globals.read(instr.index));
+			}
 		} else {
 			switch instr.kind {
 				case Set:
@@ -1116,7 +1213,57 @@ class WasmInterpreter {
 			case I64(v): stack.push(I64(v));
 			case F32(v): stack.push(F32(v));
 			case F64(v): stack.push(F64(v));
+			case Generic(type, operation): switch operation {
+				case Sub | Add | Cmp(_) | Div(_) | Eq | Mul | Ne:
+					var lhs = popAssertType(type);
+					var rhs = popAssertType(type);
+					switch type {
+						case F32 | F64:
+							switch operation {
+								case Sub | Add | Mul | Div(_):
+									var fn: (Float, Float) -> Float = switch operation {
+										case Sub: (a,b) -> a-b;
+										case Add: (a,b) -> a+b;
+										case Mul: (a,b) -> a*b;
+										case Div(signed): throw "Div not impl";
+										case _: throw "Unreachable";
+									}
+									stack.push(Utils.floatBinOp(lhs, rhs, fn));
+								case Cmp(_) | Eq | Ne:
+									throw "Cmp | Eq | Ne not impl"; 
+								case _:
+							}
+						case I32 | I64:
+							switch operation {
+								case Sub | Add | Mul | Div(_):
+									var fn = switch operation {
+										case Sub: (a,b) -> a-b;
+										case Add: (a,b) -> a+b;
+										case Mul: (a,b) -> a*b;
+										case Div(signed): throw "Div not impl";
+										case _: throw "Unreachable";
+									}
+									stack.push(Utils.intBinOp(lhs, rhs, fn));
+								case Cmp(_) | Eq | Ne:
+									throw "Cmp | Eq | Ne not impl"; 
+								case _:
+							}
+					}
+				case Eqz:
+					throw "EQZ not impl";
+			};
 			case x: throw '$x is not implemented';
+		}
+	}
+
+	function popAssertType(type: ValType): WasmValue {
+		var value = stack.pop();
+		switch value {
+			case I32(_) if (type != I32): throw 'Invalid type: got $value expected $type';
+			case I64(_) if (type != I64): throw 'Invalid type: got $value expected $type';
+			case F32(_) if (type != F32): throw 'Invalid type: got $value expected $type';
+			case F64(_) if (type != F64): throw 'Invalid type: got $value expected $type';
+			case _: return value;
 		}
 	}
 }
