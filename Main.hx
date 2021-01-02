@@ -4,11 +4,20 @@ class Main {
 	static var input:Array<Int> = [0,97,115,109,1,0,0,0,1,13,3,96,1,127,1,127,96,1,127,0,96,0,0,2,15,1,3,101,110,118,7,112,117,116,99,104,97,114,0,0,3,4,3,1,0,2,4,5,1,112,1,1,1,5,3,1,0,2,6,8,1,127,1,65,128,136,4,11,7,19,2,6,109,101,109,111,114,121,2,0,6,95,115,116,97,114,116,0,3,10,244,2,3,141,1,1,14,127,35,128,128,128,128,0,33,1,65,16,33,2,32,1,32,2,107,33,3,32,3,36,128,128,128,128,0,32,3,32,0,54,2,12,32,3,40,2,12,33,4,2,64,2,64,32,4,13,0,12,1,11,32,3,40,2,12,33,5,65,10,33,6,32,5,32,6,109,33,7,32,7,16,129,128,128,128,0,32,3,40,2,12,33,8,65,10,33,9,32,8,32,9,111,33,10,65,48,33,11,32,10,32,11,106,33,12,32,12,16,128,128,128,128,0,26,11,65,16,33,13,32,3,32,13,106,33,14,32,14,36,128,128,128,128,0,15,11,198,1,1,23,127,35,128,128,128,128,0,33,1,65,16,33,2,32,1,32,2,107,33,3,32,3,36,128,128,128,128,0,65,1,33,4,32,3,32,0,54,2,8,32,3,40,2,8,33,5,32,5,33,6,32,4,33,7,32,6,32,7,76,33,8,65,1,33,9,32,8,32,9,113,33,10,2,64,2,64,32,10,69,13,0,65,1,33,11,32,3,32,11,54,2,12,12,1,11,32,3,40,2,8,33,12,65,1,33,13,32,12,32,13,107,33,14,32,14,16,130,128,128,128,0,33,15,32,3,40,2,8,33,16,65,2,33,17,32,16,32,17,107,33,18,32,18,16,130,128,128,128,0,33,19,32,15,32,19,106,33,20,32,3,32,20,54,2,12,11,32,3,40,2,12,33,21,65,16,33,22,32,3,32,22,106,33,23,32,23,36,128,128,128,128,0,32,21,15,11,27,1,2,127,65,20,33,0,32,0,16,130,128,128,128,0,33,1,32,1,16,129,128,128,128,0,15,11,0,42,4,110,97,109,101,1,35,4,0,7,112,117,116,99,104,97,114,1,10,112,114,105,110,116,95,117,105,110,116,2,3,102,105,98,3,6,95,115,116,97,114,116,0,38,9,112,114,111,100,117,99,101,114,115,1,12,112,114,111,99,101,115,115,101,100,45,98,121,1,5,99,108,97,110,103,6,49,48,46,48,46,48];
 
     static function main() {
-		var wasm = new Wasm(Main.input);
+		var wasm = new WasmBinary(Main.input);
 		Sys.println("Module Info:");
 		Sys.println("============");
 		Sys.println("");
 		wasm.info();
+
+		var start = null;
+		switch wasm.find_export("_start") {
+			case Func(id): start = id;
+			case x: throw 'Start is not a function: $x';
+		};
+
+		var inter = new WasmInterpreter(wasm);
+		inter.execute_init(start);
     }
 }
 
@@ -116,8 +125,8 @@ enum ValType {
 }
 
 class FuncType {
-	var inputs: Array<ValType>;
-	var outputs: Array<ValType>;
+	public var inputs(default, null): Array<ValType>;
+	public var outputs(default, null): Array<ValType>;
 
 	public function new(bytes: Iterator<Int>) {
 		if (bytes.next() != 0x60) {
@@ -222,7 +231,7 @@ enum ImportDesc {
 class Import {
 	var mod: String;
 	var name: String;
-	var desc: ImportDesc;
+	public var desc(default, null): ImportDesc;
 
 	public function new(bytes: Iterator<Int>) {
 		mod = Utils.readName(bytes);
@@ -250,8 +259,8 @@ enum ExportDesc {
 }
 
 class Export {
-	var name: String;
-	var desc: ExportDesc;
+	public var name(default, null): String;
+	public var desc(default, null): ExportDesc;
 
 	public function new(bytes: Iterator<Int>) {
 		name = Utils.readName(bytes);
@@ -284,6 +293,17 @@ class Locals {
 	public function toString(): String {
 		return '($type)^$n';
 	}
+
+	public function init(): Array<WasmValue> {
+		var value = null;
+		switch type {
+			case I32: value = I32(0);
+			case I64: value = I64(0);
+			case F32: value = F32(0.0);
+			case F64: value = F64(0.0);
+		};
+		return [for (i in 0...n) value];
+	}
 }
 
 class Globals {
@@ -315,7 +335,7 @@ enum BlockInstrKind {
 
 class BlockInstr {
 	var type: BlockType;
-	var instr: BlockInstrKind;
+	public var instr(default, null): BlockInstrKind;
 
 	static function readBlockType(bytes: Iterator<Int>): BlockType {
 		switch bytes.next() {
@@ -361,9 +381,9 @@ enum VarInstrKind {
 }
 
 class VarInstr {
-	var global: Bool;
-	var kind: VarInstrKind;
-	var index: Int;
+	public var global(default, null): Bool;
+	public var kind(default, null): VarInstrKind;
+	public var index(default, null): Int;
 
 	public function new(opcode: Int, bytes: Iterator<Int>) {
 		index = Utils.readU(32, bytes);
@@ -764,7 +784,7 @@ class BareExpr extends Expr {
 }
 
 class Expr {
-	var instrs: Array<Instr>;
+	public var instrs(default, null): Array<Instr>;
 	public var has_else(default, null): Bool;
 
 	public function new(bytes: Iterator<Int>) {
@@ -798,11 +818,15 @@ class Expr {
 
 class Func {
 	var locals: Array<Locals>;
-	var expr: Expr;
+	public var expr(default, null): Expr;
 
 	public function new(bytes: Iterator<Int>) {
 		locals = Utils.readVec(bytes, (b) -> new Locals(b));
 		expr = new BareExpr(bytes);
+	}
+
+	public function locals_array(): Array<WasmValue> {
+		return Lambda.flatMap(locals, (local) -> local.init());
 	}
 
 	public function toString(): String {
@@ -812,7 +836,7 @@ class Func {
 
 class Code {
 	var size: Int;
-	var body: Func;
+	public var body(default, null): Func;
 
 	public function new(bytes: Iterator<Int>) {
 		size = Utils.readU(32, bytes);
@@ -824,7 +848,12 @@ class Code {
 	}
 }
 
-class Wasm {
+enum FunctionKind {
+	Import;
+	Local;
+}
+
+class WasmBinary {
 	static var MAGIC: Array<Int> = [0x00, 0x61, 0x73, 0x6d];
 	static var VERSION: Array<Int> = [0x01, 0x00, 0x00, 0x00];
 	var type: VecSection<FuncType>;
@@ -834,19 +863,38 @@ class Wasm {
 	var memory: VecSection<MemType>;
 	var globals: VecSection<Globals>;
 	var export: VecSection<Export>;
-	var code: VecSection<Code>;
+	public var code(default, null): VecSection<Code>;
+
+	var maxImport: Int;
+	var funcImports: Map<Int, Int>;
+
+	public function resolve(func_id: Int): FunctionKind {
+		if (func_id > maxImport) {
+			return Local;
+		} else {
+			return Import;
+		}
+	}
+
+	public function signature(func_id: Int): FuncType {
+		var typeIdx = switch resolve(func_id) {
+			case Local: functions.elements[func_id - (maxImport + 1)];
+			case Import: funcImports[func_id];
+		}
+		return type.elements[typeIdx];
+	}
 
 	public function new(input: Iterable<Int>) {
 		var input = input.iterator();
 
 		var magic = [input.next(), input.next(), input.next(), input.next()];
-		if (!Utils.equals(magic, Wasm.MAGIC)) {
-			throw 'Invalid magic number: got ${magic} expected ${Wasm.MAGIC}';
+		if (!Utils.equals(magic, WasmBinary.MAGIC)) {
+			throw 'Invalid magic number: got ${magic} expected ${WasmBinary.MAGIC}';
 		}
 
 		var version = [input.next(), input.next(), input.next(), input.next()];
-		if (!Utils.equals(version, Wasm.VERSION)) {
-			throw 'Invalid version: got ${version} expected ${Wasm.VERSION}';
+		if (!Utils.equals(version, WasmBinary.VERSION)) {
+			throw 'Invalid version: got ${version} expected ${WasmBinary.VERSION}';
 		}
 
 		while(true) {
@@ -890,6 +938,27 @@ class Wasm {
 					section.dummyRead(input);
 			}
 		}
+		funcImports = [];
+		maxImport = -1;
+		for (i in 0...imports.elements.length) {
+			var imp = imports.elements[i];
+			switch imp.desc {
+				case FuncRef(x): 
+					maxImport += 1;
+					funcImports[i] = x;
+				case _:
+			}
+		}
+	}
+
+	public function find_export(symbol: String): ExportDesc {
+		return Lambda.find(export.elements, (export) -> export.name == symbol).desc;
+	}
+
+	public function is_init_function(id: Int): Bool {
+		var signature_id = functions.elements[id - 1];
+		var signature = type.elements[signature_id];
+		return signature.inputs.length == 0 && signature.outputs.length == 0;
 	}
 
 	public function info() {
@@ -901,6 +970,7 @@ class Wasm {
 		for(i in imports.elements) {
 			Sys.println("   " + i.toString());
 		}
+		Sys.println('   Max funcref: $maxImport');
 		Sys.println("Functions:");
 		for(i in 0...functions.elements.length) {
 			Sys.println('  f[${i + 1}] := ${functions.elements[i]}');
@@ -924,6 +994,129 @@ class Wasm {
 		Sys.println("Code:");
 		for(t in code.elements) {
 			Sys.println("   " + t.toString());
+		}
+	}
+}
+
+enum WasmValue {
+	I32(v: Int);
+	I64(v: Int);
+	F32(v: Float);
+	F64(v: Float);
+}
+
+class Frame {
+	public var locals: Array<WasmValue>;
+	public var code: Expr;
+	public var iptr: Int;
+	public var arity: Int;
+	public var funcId: Int;
+
+	public function new(l: Array<WasmValue>, c: Expr, a: Int, f: Int) {
+		locals = l;
+		code = c;
+		iptr = 0;
+		arity = a;
+		funcId = f;
+	}
+}
+
+class WasmInterpreter {
+	var binary: WasmBinary;
+	var stack: Array<WasmValue>;
+	var frames: Array<Frame>;
+
+	function current_frame(): Frame {
+		return frames[frames.length - 1];
+	}
+
+	public function new(wasm: WasmBinary) {
+		binary = wasm;
+		stack = [];
+		frames = [new Frame(null, null, 0, -1)];
+	}
+
+	public function execute_init(func_id: Int) {
+		if (!binary.is_init_function(func_id)) {
+			throw "Can't exec a function that is not () -> () as init";
+		}
+
+		call(func_id, [], 0);
+		execute();
+	}
+
+	function call(func_id: Int, args: Array<WasmValue>, arity: Int) {
+		switch binary.resolve(func_id) {
+			case Local:
+				Sys.println('Calling $func_id in ${current_frame().funcId}');
+				var func = binary.code.elements[func_id - 1].body;
+				frames.push(new Frame(args.concat(func.locals_array()), func.expr, arity, func_id));
+			case Import:
+				throw "Can't execute imported functions yet";
+		}
+	}
+
+	function execute() {
+		var frame = current_frame();
+		if (frame.code == null) {
+			throw "Code or iptr is null, can't execute";
+		}
+		while (frame.iptr < frame.code.instrs.length) {
+			var instr = frame.code.instrs[frame.iptr];
+			Sys.println(instr);
+			switch instr {
+				case Numeric(x): executeNumeric(frame, x);
+				case Var(x): executeVar(frame, x);
+				case Call(id): 
+					executeCall(false, id);
+					continue;
+				case CallIndirect(id): 
+					executeCall(true, id);
+					continue;
+				case Return: executeReturn();
+				case x: throw '$x is not implemented';	
+			}
+			frame.iptr += 1;
+		}
+	}
+
+	function executeReturn() {
+		frames.pop();
+		current_frame().iptr += 1;
+	}
+
+	function executeCall(indirect: Bool, id: Int) {
+		if (indirect) {
+			throw "Indirect call not implemented";
+		}
+		var signature = binary.signature(id);
+		var arg_count = signature.inputs.length;
+		var args = [for (i in 0...arg_count) stack.pop()];
+		call(id, args, signature.outputs.length);
+	}
+
+	function executeVar(frame: Frame, instr: VarInstr) {
+		if (instr.global) {
+			throw "Global not implemented";
+		} else {
+			switch instr.kind {
+				case Set:
+					frame.locals[instr.index] = stack.pop();
+				case Get:
+					stack.push(frame.locals[instr.index]);
+				case Tee:
+					frame.locals[instr.index] = stack[stack.length - 1];
+			}
+		}
+	}
+
+	function executeNumeric(frame: Frame, instr: Numeric) {
+		switch instr {
+			case I32(v): stack.push(I32(v));
+			case I64(v): stack.push(I64(v));
+			case F32(v): stack.push(F32(v));
+			case F64(v): stack.push(F64(v));
+			case x: throw '$x is not implemented';
 		}
 	}
 }
